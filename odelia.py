@@ -9,7 +9,6 @@ import select
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
 WEBSERVER_COMMUNICATOR_PORT = 15236
-
 BUFFER_SIZE = 2 ** 16
 
 
@@ -38,11 +37,13 @@ class WebServerCommunicator(Thread):
         while self._is_running:
             try:
                 message = self._sock.recv(BUFFER_SIZE)
-                self._logger.info("Received message %s" % (message))
-                self._recv_messages.append(message)
             except socket.error:
-                pass  # Probably timeout passed
-            time.sleep(1)
+                time.sleep(0.001)  # Nothing to receive
+                continue
+
+            self._logger.info(
+                "Received message %s" % (message.encode("hex")))
+            self._recv_messages.append(message)
 
     def stop(self):
         self._is_running = False
@@ -63,36 +64,58 @@ class OdeliaCommunicator(Thread):
         self._logger.info("Initialized")
         self._send_messages = []
 
+    def __del__(self):
+        self._logger.debug("__del__")
+        self._sock.close()
+
     def _init_socket(self, ip, port, max_listeners):
+        self._logger.debug("Init socket")
         self._sock = socket.socket()
-        self._sock.bind((ip, port))
+        while True:
+            try:
+                self._sock.bind((ip, port))
+                break
+            except socket.error:
+                self._logger.fatal(
+                    "Could not bind on port %d. Waiting 5 seconds and retry"
+                    % (port,))
+                time.sleep(5)
+
         self._sock.listen(max_listeners)
 
     def _search_for_client(self):
+        self._logger.info("Waiting for client")
         rfds = []
         while self._is_running:
             rfds, wfds, xfds = select.select([self._sock], [], [], 1)
             if len(rfds) != 0:
-                return self._sock.accept()
+                conn, addr = self._sock.accept()
+                self._logger.info("Client Connected %s" % (str(addr)))
+                return conn, addr
         return None
 
     def _handle_client(self):
-        self._logger.info("Waiting for client")
         client = self._search_for_client()
         try:
             while self._is_running:
-                while len(self._send_messages) != 0:
+                try:
                     message = self._send_messages.pop(0)
-                    size = struct.pack(">I", len(message))
-                    client.sendall(size)
-                    client.sendall(message)
-                    self._logger.info("Sent message to odelia %s" % (message,))
-                time.sleep(0.01)
+                except IndexError:
+                    # Probably no messages are waiting
+                    time.sleep(0.001)
+                    continue
+
+                size = struct.pack(">I", len(message))
+                client[0].sendall(size)
+                client[0].sendall(message)
+                self._logger.info("Sent message to odelia %s" % (message,))
+
         except socket.error:
             logging.info("Client Disconnected")
         finally:
             if client is not None:
-                client.close()
+                logging.info("Closing connection with client")
+                client[0].close()
 
     def send_message(self, message):
         self._send_messages.append(message)
@@ -115,7 +138,6 @@ if __name__ == "__main__":
         while True:
             for message in web_server_communicator.recv_messages():
                 odelia_communicator.send_message(message)
-            time.sleep(0.01)
     except (KeyboardInterrupt, SystemExit):
         print '### Received keyboard interrupt, quitting threads ###'
     finally:
