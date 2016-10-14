@@ -108,7 +108,7 @@ class OdeliaCommunicator(Thread):
                 size = struct.pack(">I", len(message))
                 client[0].sendall(size)
                 client[0].sendall(message)
-                self._logger.info("Sent message to odelia %s" % (message,))
+                self._logger.info("Sent message to odelia %s" % (message.encode("hex"),))
 
         except socket.error:
             logging.info("Client Disconnected")
@@ -128,12 +128,75 @@ class OdeliaCommunicator(Thread):
     def stop(self):
         self._is_running = False
 
+
+class VideoStreamer(Thread):
+    def __init__(self):
+        super(VideoStreamer, self).__init__()
+        self._logger = logging.getLogger("VideoStreamer")
+        self._is_running = False
+        self._logger.info("Initialized")
+
+    def run(self):
+        self._is_running = True
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("0.0.0.0", 1222))
+        sock.setblocking(0)
+
+        sock2 = socket.socket()
+        sock2.bind(("0.0.0.0", 1223))
+        sock2.listen(10)
+
+        connections = []
+
+        while self._is_running:
+            rfds, wfds, xfds = select.select([sock2, sock], [], [], 1)
+            if sock2 in rfds:
+                conn = sock2.accept()[0]
+                conn.send("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace;boundary=Ba4oTvQMY8ew04N8dcnM\r\n\r\n")
+                self._logger.info("Got connection and sent header")
+                connections.append(conn)
+            if sock in rfds:
+                while True:
+                    try:
+                        data = sock.recv(65536)
+                    except socket.error:
+                        break
+
+                content_length_string_index = data.rfind("Content-Length: ")
+                if content_length_string_index == -1:
+                    continue
+
+                end_of_content_length_index = data.find("\r\n", content_length_string_index)
+                length = int(data[content_length_string_index + len("Content-Length: "):end_of_content_length_index])
+                image = data[
+                    end_of_content_length_index + 4:
+                    end_of_content_length_index + 4 + length]
+
+                if (len(image) != length):
+                    continue
+
+                for conn in connections:
+                    try:
+                        conn.send("\r\n--Ba4oTvQMY8ew04N8dcnM\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % (length) + image)
+                    except socket.error:
+                        connections.remove(conn)
+                        self._logger.info("Connection closed")
+
+        sock.close()
+        sock2.close()
+
+    def stop(self):
+        self._is_running = False
+
+
 if __name__ == "__main__":
+    video_streamer = VideoStreamer()
     web_server_communicator = WebServerCommunicator()
     odelia_communicator = OdeliaCommunicator()
     try:
         web_server_communicator.start()
         odelia_communicator.start()
+        video_streamer.start()
 
         while True:
             for message in web_server_communicator.recv_messages():
@@ -143,3 +206,4 @@ if __name__ == "__main__":
     finally:
         web_server_communicator.stop()
         odelia_communicator.stop()
+        video_streamer.stop()
