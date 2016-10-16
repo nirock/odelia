@@ -29,7 +29,7 @@ class WebServerCommunicator(Thread):
         self._logger.debug("Init socket")
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setblocking(0)
-        self._sock.bind(("127.0.0.1", 15236))
+        self._sock.bind(("127.0.0.1", WEBSERVER_COMMUNICATOR_PORT))
 
     def run(self):
         self._logger.info("Web server thread running")
@@ -83,47 +83,34 @@ class OdeliaCommunicator(Thread):
 
         self._sock.listen(max_listeners)
 
-    def _search_for_client(self):
-        self._logger.info("Waiting for client")
-        rfds = []
-        while self._is_running:
-            rfds, wfds, xfds = select.select([self._sock], [], [], 1)
-            if len(rfds) != 0:
-                conn, addr = self._sock.accept()
-                self._logger.info("Client Connected %s" % (str(addr)))
-                return conn, addr
-        return None
-
-    def _handle_client(self):
-        client = self._search_for_client()
-        try:
-            while self._is_running:
-                try:
-                    message = self._send_messages.pop(0)
-                except IndexError:
-                    # Probably no messages are waiting
-                    time.sleep(0.001)
-                    continue
-
-                size = struct.pack(">I", len(message))
-                client[0].sendall(size)
-                client[0].sendall(message)
-                self._logger.info("Sent message to odelia %s" % (message.encode("hex"),))
-
-        except socket.error:
-            logging.info("Client Disconnected")
-        finally:
-            if client is not None:
-                logging.info("Closing connection with client")
-                client[0].close()
-
     def send_message(self, message):
         self._send_messages.append(message)
 
     def run(self):
         self._is_running = True
+        connections = []
         while self._is_running:
-            self._handle_client()
+            rfds, wfds, xfds = select.select([self._sock], [], [], 0.001)
+            if self._sock in rfds:
+                connections.append(self._sock.accept()[0])
+
+            try:
+                message = self._send_messages.pop(0)
+            except IndexError:
+                continue
+
+            size = struct.pack(">I", len(message))
+            for client in connections:
+                try:
+                    client.sendall(size)
+                    client.sendall(message)
+                    self._logger.info("Sent message to odelia %s" % (message.encode("hex"),))
+                except socket.error:
+                    logging.info("Client Disconnected")
+                    client.close()
+                    connections.remove(client)
+        for conn in connections:
+            conn.close()
 
     def stop(self):
         self._is_running = False
