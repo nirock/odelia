@@ -6,7 +6,7 @@ import sys
 from threading import Thread
 import select
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", stream=sys.stdout, level=logging.DEBUG)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", stream=sys.stdout, level=logging.INFO)
 
 WEBSERVER_COMMUNICATOR_PORT = 15236
 BUFFER_SIZE = 2 ** 16
@@ -169,6 +169,8 @@ class VideoStreamer(Thread):
 
                 if (len(image) != length):
                     continue
+
+                self._logger.debug("Sending image to %d conntions" % (len(connections)))
 
                 for conn in connections:
                     try:
