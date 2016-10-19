@@ -6,7 +6,7 @@ import sys
 from threading import Thread
 import select
 
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", stream=sys.stdout, level=logging.DEBUG)
 
 WEBSERVER_COMMUNICATOR_PORT = 15236
 BUFFER_SIZE = 2 ** 16
@@ -92,8 +92,8 @@ class OdeliaCommunicator(Thread):
         while self._is_running:
             rfds, wfds, xfds = select.select([self._sock], [], [], 0.001)
             if self._sock in rfds:
-                connections.append(self._sock.accept()[0])
-
+                conn, addr = self._sock.accept()
+                connections.append(conn)
             try:
                 message = self._send_messages.pop(0)
             except IndexError:
@@ -136,11 +136,19 @@ class VideoStreamer(Thread):
         connections = []
 
         while self._is_running:
-            rfds, wfds, xfds = select.select([sock2, sock], [], [], 1)
+            rfds, wfds, xfds = select.select([sock2, sock] + connections, [], [], 1)
+            for conn in connections:
+                if conn in rfds:
+                    if conn.recv(2 ** 16) != "":
+                        continue
+                    self._logger.info("Connection closed with")
+                    conn.close()
+                    connections.remove(conn)
             if sock2 in rfds:
                 conn = sock2.accept()[0]
-                conn.send("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace;boundary=Ba4oTvQMY8ew04N8dcnM\r\n\r\n")
-                self._logger.info("Got connection and sent header")
+                conn.setblocking(0)
+                conn.sendall("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace;boundary=Ba4oTvQMY8ew04N8dcnM\r\n\r\n")
+                self._logger.info("Got connection and sent header - with %s" % (str(conn.getpeername())))
                 connections.append(conn)
             if sock in rfds:
                 while True:
@@ -164,10 +172,14 @@ class VideoStreamer(Thread):
 
                 for conn in connections:
                     try:
-                        conn.send("\r\n--Ba4oTvQMY8ew04N8dcnM\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % (length) + image)
+                        conn.sendall("\r\n--Ba4oTvQMY8ew04N8dcnM\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % (length) + image)
                     except socket.error:
-                        connections.remove(conn)
                         self._logger.info("Connection closed")
+                        conn.close()
+                        connections.remove(conn)
+
+        for conn in connections:
+            conn.close()
 
         sock.close()
         sock2.close()
