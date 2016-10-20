@@ -12,150 +12,161 @@ WEBSERVER_COMMUNICATOR_PORT = 15236
 BUFFER_SIZE = 2 ** 16
 
 
-class WebServerCommunicator(Thread):
-    def __init__(self):
-        super(WebServerCommunicator, self).__init__()
+def safe_create_tcp_socket(ip, port, max_listeners):
+    sock = socket.socket()
+    while True:
+        try:
+            sock.bind((ip, port))
+            break
+        except socket.error:
+            logging.fatal(
+                "Could not bind on port %d. Waiting 5 seconds and retry"
+                % (port,))
+            time.sleep(5)
+    sock.listen(max_listeners)
+    return sock
+
+class SelectBasedServer(object):
+    def get_fds(self):
+        raise NotImplementedError
+
+    def handle_fds(self, rfds):
+        raise NotImplementedError
+
+
+class WebServerCommunicator(SelectBasedServer):
+    def __init__(self, handle_message_callback):
         self._logger = logging.getLogger("WebServerCommunicator")
+        super(WebServerCommunicator, self).__init__()
+
         self._init_socket()
-        self._recv_messages = []
-        self._is_running = False
-        self._logger.debug("Initialized")
+        self._handle_message_callback = handle_message_callback
 
-    def __del__(self):
-        self._logger.debug("__del__")
-        self._sock.close()
-
-    def _init_socket(self):
-        self._logger.debug("Init socket")
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.setblocking(0)
-        self._sock.bind(("127.0.0.1", WEBSERVER_COMMUNICATOR_PORT))
-
-    def run(self):
-        self._logger.info("Web server thread running")
-        self._is_running = True
-        while self._is_running:
-            try:
-                message = self._sock.recv(BUFFER_SIZE)
-            except socket.error:
-                time.sleep(0.001)  # Nothing to receive
-                continue
-
-            self._logger.info(
-                "Received message %s" % (message.encode("hex")))
-            self._recv_messages.append(message)
-
-    def stop(self):
-        self._is_running = False
-
-    def recv_messages(self):
-        messages = []
-        while len(self._recv_messages) > 0:
-            messages.append(self._recv_messages.pop(0))
-        return messages
-
-
-class OdeliaCommunicator(Thread):
-    def __init__(self, ip="0.0.0.0", port=1221, max_listeners=1):
-        super(OdeliaCommunicator, self).__init__()
-        self._logger = logging.getLogger("OdeliaCommunicator")
-        self._init_socket(ip, port, max_listeners)
-        self._is_running = False
         self._logger.info("Initialized")
-        self._send_messages = []
 
     def __del__(self):
-        self._logger.debug("__del__")
+        self._logger.info("__del__")
         self._sock.close()
+
+    def _init_socket(self, ip="127.0.0.1", port=WEBSERVER_COMMUNICATOR_PORT):
+        self._logger.info("Init socket")
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind((ip, port))
+        self._sock.setblocking(0)
+
+    def get_fds(self):
+        return [self._sock]
+
+    def handle_fds(self, rfds):
+        if self._sock in rfds:
+            while True:
+                try:
+                    message = self._sock.recv(BUFFER_SIZE)
+                except socket.error:
+                    break
+            self._logger.info("Received message %s" % (message.encode("hex")))
+            self._handle_message_callback(message)
+
+
+class OdeliaCommunicator(SelectBasedServer):
+    def __init__(self, ip="0.0.0.0", port=1221, max_listeners=5):
+        self._logger = logging.getLogger("OdeliaCommunicator")
+        super(OdeliaCommunicator, self).__init__()
+
+        self._init_socket(ip, port, max_listeners)
+        self._connections = []
+
+        self._logger.info("Initialized")
+
+    def __del__(self):
+        self._logger.info("__del__")
+        self._sock.close()
+        for conn in self._connections:
+            conn[0].close()
 
     def _init_socket(self, ip, port, max_listeners):
-        self._logger.debug("Init socket")
-        self._sock = socket.socket()
-        while True:
-            try:
-                self._sock.bind((ip, port))
-                break
-            except socket.error:
-                self._logger.fatal(
-                    "Could not bind on port %d. Waiting 5 seconds and retry"
-                    % (port,))
-                time.sleep(5)
+        self._logger.info("Init socket")
+        self._sock = safe_create_tcp_socket(ip, port, max_listeners)
 
-        self._sock.listen(max_listeners)
+    def get_fds(self):
+        return [self._sock] + [conn for conn, addr in self._connections]
+
+    def handle_fds(self, rfds):
+        for conn, addr in self._connections:
+            if conn in rfds:
+                if conn.recv(2 ** 16) != "":
+                    continue
+                conn.close()
+                self._connections.remove((conn, addr))
+                self._logger.info("Disconnected %s" % (str(addr),))
+        if self._sock in rfds:
+            conn, addr = self._sock.accept()
+            conn.setblocking(0)
+            self._connections.append((conn, addr))
+            self._logger.info("Connected %s" % (addr,))
 
     def send_message(self, message):
-        self._send_messages.append(message)
-
-    def run(self):
-        self._is_running = True
-        connections = []
-        while self._is_running:
-            rfds, wfds, xfds = select.select([self._sock], [], [], 0.001)
-            if self._sock in rfds:
-                conn, addr = self._sock.accept()
-                connections.append(conn)
+        size = struct.pack(">I", len(message))
+        for conn, addr in self._connections:
             try:
-                message = self._send_messages.pop(0)
-            except IndexError:
-                continue
-
-            size = struct.pack(">I", len(message))
-            for client in connections:
-                try:
-                    client.sendall(size)
-                    client.sendall(message)
-                    self._logger.info("Sent message to odelia %s" % (message.encode("hex"),))
-                except socket.error:
-                    logging.info("Client Disconnected")
-                    client.close()
-                    connections.remove(client)
-        for conn in connections:
-            conn.close()
-
-    def stop(self):
-        self._is_running = False
+                conn.sendall(size)
+                conn.sendall(message)
+                self._logger.info("Sent message %s to odelia %s" % (message.encode("hex"),str(addr)))
+            except socket.error:
+                conn.close()
+                self._connections.remove((conn, addr))
+                self._logger.info("Disconnected %s" % (str(addr),))
 
 
-class VideoStreamer(Thread):
+class VideoStreamer(SelectBasedServer):
     def __init__(self):
-        super(VideoStreamer, self).__init__()
         self._logger = logging.getLogger("VideoStreamer")
-        self._is_running = False
+        super(VideoStreamer, self).__init__()
+
+        self._init_sockets()
+        self._connections = []
+
         self._logger.info("Initialized")
 
-    def run(self):
-        self._is_running = True
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(("0.0.0.0", 1222))
-        sock.setblocking(0)
+    def __del__(self):
+        self._logger.info("__del__")
+        self._sock_recv_video.close()
+        self._sock_send_video.close()
+        for conn in self._connections:
+            conn[0].close()
 
-        sock2 = socket.socket()
-        sock2.bind(("0.0.0.0", 1223))
-        sock2.listen(10)
+    def _init_sockets(self):
+        self._logger.info("Init sockets")
+        self._sock_recv_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock_recv_video.bind(("0.0.0.0", 1222))
+        self._sock_recv_video.setblocking(0)
 
-        connections = []
+        self._sock_send_video = safe_create_tcp_socket("0.0.0.0", 1223, 10)
+        self._sock_send_video.accept()
 
-        while self._is_running:
-            rfds, wfds, xfds = select.select([sock2, sock] + connections, [], [], 1)
-            for conn in connections:
-                if conn in rfds:
-                    if conn.recv(2 ** 16) != "":
-                        continue
-                    self._logger.info("Connection closed with")
-                    conn.close()
-                    connections.remove(conn)
-            if sock2 in rfds:
-                conn = sock2.accept()[0]
+    def get_fds(self):
+        return [self._sock_recv_video, self._sock_send_video] + [conn for conn, addr in self._connections]
+
+    def handle_fds(self, rfds):
+        for conn, addr in self._connections:
+            if conn in rfds:
+                if conn.recv(2 ** 16) != "":
+                    continue
+                conn.close()
+                self._connections.remove((conn, addr))
+                self._logger.info("Disconnected %s" % (str(addr),))
+        if self._sock_send_video in rfds:
+                conn, addr = self._sock_send_video.accept()
                 conn.setblocking(0)
                 conn.sendall("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace;boundary=Ba4oTvQMY8ew04N8dcnM\r\n\r\n")
-                self._logger.info("Got connection and sent header - with %s" % (str(conn.getpeername())))
-                connections.append(conn)
-            if sock in rfds:
-                while True:
-                    try:
-                        data = sock.recv(65536)
-                    except socket.error:
-                        break
+                self._logger.info("Connected and sent header %s" % (str(addr),))
+                self._connections.append((conn, addr))
+        if self._sock_recv_video in rfds:
+            while True:
+                try:
+                    data = self._sock_recv_video.recv(65536)
+                except socket.error:
+                    break
 
                 content_length_string_index = data.rfind("Content-Length: ")
                 if content_length_string_index == -1:
@@ -170,41 +181,38 @@ class VideoStreamer(Thread):
                 if (len(image) != length):
                     continue
 
-                self._logger.debug("Sending image to %d conntions" % (len(connections)))
+                self._logger.debug("Sending image to %d conntions" % (len(self._connections)))
 
-                for conn in connections:
+                for conn, addr in self._connections:
                     try:
                         conn.sendall("\r\n--Ba4oTvQMY8ew04N8dcnM\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % (length) + image)
                     except socket.error:
-                        self._logger.info("Connection closed")
+                        self._logger.info("%s disconnected" % (addr,))
                         conn.close()
-                        connections.remove(conn)
+                        self._connections.remove((conn, addr))
 
-        for conn in connections:
-            conn.close()
 
-        sock.close()
-        sock2.close()
+def main():
+    odelia_communicator = OdeliaCommunicator()
+    web_server_communicator = WebServerCommunicator(odelia_communicator.send_message)
 
-    def stop(self):
-        self._is_running = False
+    select_based_servers = [
+        web_server_communicator,
+        odelia_communicator,
+        VideoStreamer(),
+    ]
+
+    while True:
+        rfds = []
+        for server in select_based_servers:
+            rfds.extend(server.get_fds())
+        rfds, wfds, xfds = select.select(rfds, [], [], 10)
+        for server in select_based_servers:
+            server.handle_fds(rfds)
+
 
 
 if __name__ == "__main__":
-    video_streamer = VideoStreamer()
-    web_server_communicator = WebServerCommunicator()
-    odelia_communicator = OdeliaCommunicator()
-    try:
-        web_server_communicator.start()
-        odelia_communicator.start()
-        video_streamer.start()
+    main()
 
-        while True:
-            for message in web_server_communicator.recv_messages():
-                odelia_communicator.send_message(message)
-    except (KeyboardInterrupt, SystemExit):
-        print '### Received keyboard interrupt, quitting threads ###'
-    finally:
-        web_server_communicator.stop()
-        odelia_communicator.stop()
-        video_streamer.stop()
+
