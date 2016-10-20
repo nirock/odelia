@@ -6,7 +6,9 @@ import sys
 from threading import Thread
 import select
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", stream=sys.stdout, level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stdout, level=logging.INFO)
 
 WEBSERVER_COMMUNICATOR_PORT = 15236
 BUFFER_SIZE = 2 ** 16
@@ -20,13 +22,15 @@ def safe_create_tcp_socket(ip, port, max_listeners):
             break
         except socket.error:
             logging.fatal(
-                "Could not bind on port %d. Waiting 5 seconds and retry"
-                % (port,))
+                "Could not bind on port %d."
+                " Waiting 5 seconds and retry" % (port,))
             time.sleep(5)
     sock.listen(max_listeners)
     return sock
 
+
 class SelectBasedServer(object):
+
     def get_fds(self):
         raise NotImplementedError
 
@@ -35,6 +39,7 @@ class SelectBasedServer(object):
 
 
 class WebServerCommunicator(SelectBasedServer):
+
     def __init__(self, handle_message_callback):
         self._logger = logging.getLogger("WebServerCommunicator")
         super(WebServerCommunicator, self).__init__()
@@ -69,6 +74,7 @@ class WebServerCommunicator(SelectBasedServer):
 
 
 class OdeliaCommunicator(SelectBasedServer):
+
     def __init__(self, ip="0.0.0.0", port=1221, max_listeners=5):
         self._logger = logging.getLogger("OdeliaCommunicator")
         super(OdeliaCommunicator, self).__init__()
@@ -111,7 +117,9 @@ class OdeliaCommunicator(SelectBasedServer):
             try:
                 conn.sendall(size)
                 conn.sendall(message)
-                self._logger.info("Sent message %s to odelia %s" % (message.encode("hex"),str(addr)))
+                self._logger.info(
+                    "Sent message %s to odelia %s"
+                    % (message.encode("hex"), str(addr)))
             except socket.error:
                 conn.close()
                 self._connections.remove((conn, addr))
@@ -119,6 +127,7 @@ class OdeliaCommunicator(SelectBasedServer):
 
 
 class VideoStreamer(SelectBasedServer):
+
     def __init__(self):
         self._logger = logging.getLogger("VideoStreamer")
         super(VideoStreamer, self).__init__()
@@ -137,15 +146,16 @@ class VideoStreamer(SelectBasedServer):
 
     def _init_sockets(self):
         self._logger.info("Init sockets")
-        self._sock_recv_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock_recv_video = socket.socket(
+            socket.AF_INET, socket.SOCK_DGRAM)
         self._sock_recv_video.bind(("0.0.0.0", 1222))
         self._sock_recv_video.setblocking(0)
 
         self._sock_send_video = safe_create_tcp_socket("0.0.0.0", 1223, 10)
-        self._sock_send_video.accept()
 
     def get_fds(self):
-        return [self._sock_recv_video, self._sock_send_video] + [conn for conn, addr in self._connections]
+        return [self._sock_recv_video, self._sock_send_video] + \
+            [conn for conn, addr in self._connections]
 
     def handle_fds(self, rfds):
         for conn, addr in self._connections:
@@ -156,15 +166,17 @@ class VideoStreamer(SelectBasedServer):
                 self._connections.remove((conn, addr))
                 self._logger.info("Disconnected %s" % (str(addr),))
         if self._sock_send_video in rfds:
-                conn, addr = self._sock_send_video.accept()
-                conn.setblocking(0)
-                conn.sendall("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace;boundary=Ba4oTvQMY8ew04N8dcnM\r\n\r\n")
-                self._logger.info("Connected and sent header %s" % (str(addr),))
-                self._connections.append((conn, addr))
+            conn, addr = self._sock_send_video.accept()
+            conn.setblocking(0)
+            conn.sendall(
+                "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace;"
+                "boundary=Ba4oTvQMY8ew04N8dcnM\r\n\r\n")
+            self._logger.info("Connected and sent header %s" % (str(addr),))
+            self._connections.append((conn, addr))
         if self._sock_recv_video in rfds:
             while True:
                 try:
-                    data = self._sock_recv_video.recv(65536)
+                    data = self._sock_recv_video.recv(BUFFER_SIZE)
                 except socket.error:
                     break
 
@@ -172,8 +184,11 @@ class VideoStreamer(SelectBasedServer):
                 if content_length_string_index == -1:
                     continue
 
-                end_of_content_length_index = data.find("\r\n", content_length_string_index)
-                length = int(data[content_length_string_index + len("Content-Length: "):end_of_content_length_index])
+                end_of_content_length_index = data.find(
+                    "\r\n", content_length_string_index)
+                length = int(
+                    data[content_length_string_index + len("Content-Length: "):
+                         end_of_content_length_index])
                 image = data[
                     end_of_content_length_index + 4:
                     end_of_content_length_index + 4 + length]
@@ -181,11 +196,16 @@ class VideoStreamer(SelectBasedServer):
                 if (len(image) != length):
                     continue
 
-                self._logger.debug("Sending image to %d conntions" % (len(self._connections)))
+                self._logger.debug(
+                    "Sending image to %d conntions" % (len(self._connections)))
 
                 for conn, addr in self._connections:
                     try:
-                        conn.sendall("\r\n--Ba4oTvQMY8ew04N8dcnM\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % (length) + image)
+                        conn.sendall(
+                            "\r\n--Ba4oTvQMY8ew04N8dcnM"
+                            "\r\nContent-Type: image/jpeg"
+                            "\r\nContent-Length: %d\r\n\r\n"
+                            % (length) + image)
                     except socket.error:
                         self._logger.info("%s disconnected" % (addr,))
                         conn.close()
@@ -194,7 +214,8 @@ class VideoStreamer(SelectBasedServer):
 
 def main():
     odelia_communicator = OdeliaCommunicator()
-    web_server_communicator = WebServerCommunicator(odelia_communicator.send_message)
+    web_server_communicator = WebServerCommunicator(
+        odelia_communicator.send_message)
 
     select_based_servers = [
         web_server_communicator,
@@ -203,6 +224,7 @@ def main():
     ]
 
     while True:
+        logging.debug("In select loop")
         rfds = []
         for server in select_based_servers:
             rfds.extend(server.get_fds())
@@ -211,8 +233,5 @@ def main():
             server.handle_fds(rfds)
 
 
-
 if __name__ == "__main__":
     main()
-
-

@@ -21,11 +21,11 @@ def hello():
     return render_template('index.html', data=data)
 
 
-@app.route("/key/<int:key_id>")
+@app.route("/key/<int:key_id>", methods=['GET', 'POST'])
 def key(key_id):
     conn = get_communicator()
-    conn.send(chr(key_id))
-    return hello()
+    conn.sendall(chr(key_id))
+    return "Done"
 
 
 def get_communicator():

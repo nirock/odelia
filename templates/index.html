@@ -65,7 +65,7 @@
 					if (direction != old_direction) {
 						old_direction = direction
 						console.log('Direction ' + direction);
-						$.ajax({
+						$.post({
 						  url: "/key/" + direction,
 						  data: {
 						    //zipcode: 97201
