@@ -100,8 +100,11 @@ class OdeliaCommunicator(SelectBasedServer):
     def handle_fds(self, rfds):
         for conn, addr in self._connections:
             if conn in rfds:
-                if conn.recv(2 ** 16) != "":
-                    continue
+                try: 
+                    if conn.recv(2 ** 16) != "":
+                        continue
+                except socket.error: 
+                    pass
                 conn.close()
                 self._connections.remove((conn, addr))
                 self._logger.info("Disconnected %s" % (str(addr),))
@@ -153,6 +156,50 @@ class VideoStreamer(SelectBasedServer):
 
         self._sock_send_video = safe_create_tcp_socket("0.0.0.0", 1223, 10)
 
+    def _handle_send_video_sock(self, rfds):
+        if self._sock_recv_video not in rfds:
+            return
+
+        while True:
+            try:
+                data = self._sock_recv_video.recv(BUFFER_SIZE)
+            except socket.error:
+                break
+
+        content_length_string_index = data.find("Content-Length: ")
+        if content_length_string_index == -1:
+            return
+
+        end_of_content_length_index = data.find(
+            "\r\n", content_length_string_index)
+        length = int(
+            data[content_length_string_index + len("Content-Length: "):
+                 end_of_content_length_index])
+        image = data[
+            end_of_content_length_index + 4:
+            end_of_content_length_index + 4 + length]
+
+        print length, len(image), len(data), content_length_string_index, end_of_content_length_index, data[content_length_string_index:end_of_content_length_index]
+        if (len(image) != length):
+            return
+
+        open("image.jpg", "wb").write(image)
+
+        self._logger.debug(
+            "Sending image to %d conntions" % (len(self._connections)))
+
+        for conn, addr in self._connections:
+            try:
+                conn.sendall(
+                    "\r\n--Ba4oTvQMY8ew04N8dcnM"
+                    "\r\nContent-Type: image/jpeg"
+                    "\r\nContent-Length: %d\r\n\r\n"
+                    % (length) + image)
+            except socket.error:
+                self._logger.info("%s disconnected" % (addr,))
+                conn.close()
+                self._connections.remove((conn, addr))
+
     def get_fds(self):
         return [self._sock_recv_video, self._sock_send_video] + \
             [conn for conn, addr in self._connections]
@@ -160,8 +207,11 @@ class VideoStreamer(SelectBasedServer):
     def handle_fds(self, rfds):
         for conn, addr in self._connections:
             if conn in rfds:
-                if conn.recv(2 ** 16) != "":
-                    continue
+                try:
+                    if conn.recv(2 ** 16) != "":
+                        continue
+                except socket.error: 
+                    pass                
                 conn.close()
                 self._connections.remove((conn, addr))
                 self._logger.info("Disconnected %s" % (str(addr),))
@@ -173,43 +223,8 @@ class VideoStreamer(SelectBasedServer):
                 "boundary=Ba4oTvQMY8ew04N8dcnM\r\n\r\n")
             self._logger.info("Connected and sent header %s" % (str(addr),))
             self._connections.append((conn, addr))
-        if self._sock_recv_video in rfds:
-            while True:
-                try:
-                    data = self._sock_recv_video.recv(BUFFER_SIZE)
-                except socket.error:
-                    break
-
-                content_length_string_index = data.rfind("Content-Length: ")
-                if content_length_string_index == -1:
-                    continue
-
-                end_of_content_length_index = data.find(
-                    "\r\n", content_length_string_index)
-                length = int(
-                    data[content_length_string_index + len("Content-Length: "):
-                         end_of_content_length_index])
-                image = data[
-                    end_of_content_length_index + 4:
-                    end_of_content_length_index + 4 + length]
-
-                if (len(image) != length):
-                    continue
-
-                self._logger.debug(
-                    "Sending image to %d conntions" % (len(self._connections)))
-
-                for conn, addr in self._connections:
-                    try:
-                        conn.sendall(
-                            "\r\n--Ba4oTvQMY8ew04N8dcnM"
-                            "\r\nContent-Type: image/jpeg"
-                            "\r\nContent-Length: %d\r\n\r\n"
-                            % (length) + image)
-                    except socket.error:
-                        self._logger.info("%s disconnected" % (addr,))
-                        conn.close()
-                        self._connections.remove((conn, addr))
+        self._handle_send_video_sock(rfds)
+        
 
 
 def main():
