@@ -179,7 +179,7 @@ class VideoStreamer(SelectBasedServer):
             end_of_content_length_index + 4:
             end_of_content_length_index + 4 + length]
 
-        print length, len(image), len(data), content_length_string_index, end_of_content_length_index, data[content_length_string_index:end_of_content_length_index]
+        # print length, len(image), len(data), content_length_string_index, end_of_content_length_index, data[content_length_string_index:end_of_content_length_index]
         if (len(image) != length):
             return
 

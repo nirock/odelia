@@ -19,11 +19,16 @@ public class MyApp extends Application {
     void play_tone(ToneGenerator tone_generator, int tone) {
         tone_generator.startTone(tone);
         try {
-            Thread.sleep(100);
+            Thread.sleep(40);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
         tone_generator.stopTone();
+        try {
+            Thread.sleep(40);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
     }
 
     @Override
